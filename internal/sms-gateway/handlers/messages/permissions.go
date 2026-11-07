@@ -13,7 +13,7 @@ const (
 	// ScopeCancel is the permission scope required for cancelling messages.
 	ScopeCancel = smsgateway.ScopeMessagesCancel
 	// ScopePurge is the permission scope required for permanently purging message data.
-	ScopePurge = "messages:purge"
+	ScopePurge = smsgateway.ScopeMessagesPurge
 	// ScopeExport is the permission scope required for exporting messages.
 	ScopeExport = smsgateway.ScopeMessagesExport
 )

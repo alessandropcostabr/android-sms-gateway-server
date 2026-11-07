@@ -32,6 +32,10 @@ type errorResponse struct {
 	Message string `json:"message"`
 }
 
+type tokenResponse struct {
+	AccessToken string `json:"access_token"`
+}
+
 func TestMessages_GetMessages(t *testing.T) {
 	credentials := mobileDeviceRegister(t, publicMobileClient)
 	authorizedClient := publicUserClient.Clone().SetBasicAuth(credentials.Login, credentials.Password)
@@ -631,6 +635,34 @@ func TestMessages_PurgeRejectsNonCanonicalID(t *testing.T) {
 	}
 }
 
+func TestMessages_PurgeRequiresDedicatedScope(t *testing.T) {
+	credentials := privateMessageDeviceRegister(t)
+
+	purgeToken := issueMessageToken(t, credentials, []string{"messages:purge"})
+	allowedRes, err := privateUserClient.Clone().SetTimeout(2 * time.Second).
+		SetAuthToken(purgeToken).
+		R().
+		Delete("messages/" + newMessageUUID(t) + "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowedRes.StatusCode() != 204 {
+		t.Fatal(allowedRes.StatusCode(), allowedRes.String())
+	}
+
+	readToken := issueMessageToken(t, credentials, []string{"messages:read"})
+	deniedRes, err := privateUserClient.Clone().SetTimeout(2 * time.Second).
+		SetAuthToken(readToken).
+		R().
+		Delete("messages/" + newMessageUUID(t) + "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deniedRes.StatusCode() != 403 {
+		t.Fatal(deniedRes.StatusCode(), deniedRes.String())
+	}
+}
+
 func TestMessages_PurgeIsScopedByUser(t *testing.T) {
 	firstCredentials := privateMessageDeviceRegister(t)
 	secondCredentials := privateMessageDeviceRegister(t)
@@ -771,6 +803,33 @@ func privateMessageDeviceRegister(t *testing.T) mobileRegisterResponse {
 	}
 
 	return response
+}
+
+func issueMessageToken(t *testing.T, credentials mobileRegisterResponse, scopes []string) string {
+	t.Helper()
+
+	res, err := privateUserClient.Clone().SetTimeout(2*time.Second).
+		SetBasicAuth(credentials.Login, credentials.Password).
+		R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(map[string]any{"ttl": 60, "scopes": scopes}).
+		Post("auth/token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode() != 201 {
+		t.Fatal(res.StatusCode(), res.String())
+	}
+
+	var response tokenResponse
+	if err := json.Unmarshal(res.Body(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.AccessToken == "" {
+		t.Fatal("token response has no access token")
+	}
+
+	return response.AccessToken
 }
 
 func newMessageUUID(t *testing.T) string {

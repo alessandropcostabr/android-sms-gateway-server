@@ -26,9 +26,10 @@ type EnqueueOptions struct {
 type Service struct {
 	config Config
 
-	limiter   *Limiter
-	messages  *Repository
-	eventsSvc *events.Service
+	limiter         *Limiter
+	messages        *Repository
+	eventsSvc       *events.Service
+	isMessagePurged func(userID string, id string) (bool, error)
 
 	metrics       *metrics
 	cache         *stateCache
@@ -55,9 +56,10 @@ func NewService(
 	return &Service{
 		config: config,
 
-		limiter:   limiter,
-		messages:  messages,
-		eventsSvc: eventsSvc,
+		limiter:         limiter,
+		messages:        messages,
+		eventsSvc:       eventsSvc,
+		isMessagePurged: messages.IsMessagePurged,
 
 		metrics:       metrics,
 		cache:         cache,
@@ -126,13 +128,12 @@ func (s *Service) UpdateState(device *devices.Device, message MessageStateInput)
 		return err
 	}
 
-	if cacheErr := s.cache.Set(
-		context.Background(),
-		device.UserID,
-		existing.ExtID,
-		state,
-	); cacheErr != nil {
-		s.logger.Warn("failed to cache message", zap.String("id", existing.ExtID), zap.Error(cacheErr))
+	active, err := s.cacheStateIfActive(context.Background(), device.UserID, existing.ExtID, state)
+	if err != nil {
+		return err
+	}
+	if !active {
+		return ErrMessageNotFound
 	}
 	s.hashingWorker.Enqueue(existing.ID)
 	s.metrics.IncTotal(string(existing.State))
@@ -166,7 +167,7 @@ func (s *Service) SelectStates(
 }
 
 func (s *Service) GetState(userID string, id string) (*MessageState, error) {
-	purged, err := s.messages.IsMessagePurged(userID, id)
+	purged, err := s.isMessagePurged(userID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -205,11 +206,41 @@ func (s *Service) GetState(userID string, id string) (*MessageState, error) {
 		return nil, err
 	}
 
-	if cacheErr := s.cache.Set(context.Background(), userID, id, state); cacheErr != nil {
-		s.logger.Warn("failed to cache message", zap.String("id", id), zap.Error(cacheErr))
+	active, err := s.cacheStateIfActive(context.Background(), userID, id, state)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		return nil, ErrMessageNotFound
 	}
 
 	return state, nil
+}
+
+func (s *Service) cacheStateIfActive(
+	ctx context.Context,
+	userID string,
+	id string,
+	state *MessageState,
+) (bool, error) {
+	if err := s.cache.Set(ctx, userID, id, state); err != nil {
+		s.logger.Warn("failed to cache message", zap.String("id", id), zap.Error(err))
+	}
+
+	purged, err := s.isMessagePurged(userID, id)
+	if err != nil {
+		deleteErr := s.cache.Delete(ctx, userID, id)
+		return false, errors.Join(err, deleteErr)
+	}
+	if !purged {
+		return true, nil
+	}
+
+	if err := s.cache.Delete(ctx, userID, id); err != nil {
+		return false, fmt.Errorf("failed to discard cache for purged message: %w", err)
+	}
+
+	return false, nil
 }
 
 // CancelMessage transitions a pending message to Cancelling state.
@@ -287,13 +318,12 @@ func (s *Service) Enqueue(
 		return nil, err
 	}
 
-	if cacheErr := s.cache.Set(
-		context.Background(),
-		device.UserID,
-		msg.ExtID,
-		state,
-	); cacheErr != nil {
-		s.logger.Warn("failed to cache message", zap.String("id", msg.ExtID), zap.Error(cacheErr))
+	active, err := s.cacheStateIfActive(context.Background(), device.UserID, msg.ExtID, state)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		return nil, ErrMessagePurged
 	}
 	s.metrics.IncTotal(string(msg.State))
 

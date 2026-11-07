@@ -34,11 +34,12 @@ const (
 )
 
 type messageIDRegistryModel struct {
-	UserID          string                 `gorm:"primaryKey;type:varchar(32)"`
-	MessageIDSHA256 string                 `gorm:"primaryKey;type:char(64)"`
-	State           messageIDRegistryState `gorm:"not null;type:enum('active','purged')"`
-	CreatedAt       time.Time              `gorm:"->;not null;autocreatetime:false;default:CURRENT_TIMESTAMP(3)"`
-	PurgedAt        *time.Time             `gorm:"type:datetime(3)"`
+	UserID           string                 `gorm:"primaryKey;type:varchar(32)"`
+	MessageIDSHA256  string                 `gorm:"primaryKey;type:char(64)"`
+	State            messageIDRegistryState `gorm:"not null;type:enum('active','purged')"`
+	ActiveReferences uint32                 `gorm:"not null;default:1"`
+	CreatedAt        time.Time              `gorm:"->;not null;autocreatetime:false;default:CURRENT_TIMESTAMP(3)"`
+	PurgedAt         *time.Time             `gorm:"type:datetime(3)"`
 }
 
 func (*messageIDRegistryModel) TableName() string {

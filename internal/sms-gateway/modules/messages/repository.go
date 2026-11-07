@@ -135,9 +135,10 @@ func (r *Repository) get(filter SelectFilter, options SelectOptions) (messageMod
 func (r *Repository) Insert(message *messageModel) error {
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		registry := messageIDRegistryModel{
-			UserID:          message.UserID,
-			MessageIDSHA256: messageIDRegistryHash(message.UserID, message.ExtID),
-			State:           messageIDRegistryStateActive,
+			UserID:           message.UserID,
+			MessageIDSHA256:  messageIDRegistryHash(message.UserID, message.ExtID),
+			State:            messageIDRegistryStateActive,
+			ActiveReferences: 1,
 		}
 		if err := tx.Create(&registry).Error; err != nil {
 			if !errors.Is(err, gorm.ErrDuplicatedKey) && !mysql.IsDuplicateKeyViolation(err) {
@@ -181,18 +182,20 @@ func messageIDRegistryHash(userID string, id string) string {
 func (r *Repository) PurgeMessage(userID string, id string) error {
 	now := time.Now().UTC()
 	registry := messageIDRegistryModel{
-		UserID:          userID,
-		MessageIDSHA256: messageIDRegistryHash(userID, id),
-		State:           messageIDRegistryStatePurged,
-		PurgedAt:        &now,
+		UserID:           userID,
+		MessageIDSHA256:  messageIDRegistryHash(userID, id),
+		State:            messageIDRegistryStatePurged,
+		ActiveReferences: 0,
+		PurgedAt:         &now,
 	}
 
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "message_id_sha256"}},
 			DoUpdates: clause.Assignments(map[string]any{
-				"state":     messageIDRegistryStatePurged,
-				"purged_at": now,
+				"state":             messageIDRegistryStatePurged,
+				"active_references": 0,
+				"purged_at":         now,
 			}),
 		}).Create(&registry).Error; err != nil {
 			return err
@@ -329,6 +332,33 @@ func (r *Repository) CancelMessage(userID string, id string) error {
 func (r *Repository) Cleanup(ctx context.Context, until time.Time) (int64, error) {
 	var deleted int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`
+			UPDATE message_id_registry AS r
+			INNER JOIN (
+				SELECT
+					user_id,
+					SHA2(CONCAT(user_id, CHAR(10), ext_id), 256) AS message_id_sha256,
+					COUNT(*) AS deleted_references
+				FROM messages
+				WHERE state NOT IN ?
+					AND created_at < ?
+				GROUP BY user_id, SHA2(CONCAT(user_id, CHAR(10), ext_id), 256)
+			) AS d
+				ON d.user_id = r.user_id
+				AND d.message_id_sha256 = r.message_id_sha256
+			SET r.active_references = CASE
+				WHEN r.active_references > d.deleted_references
+					THEN r.active_references - d.deleted_references
+				ELSE 0
+			END
+			WHERE r.state = ?`,
+			[]ProcessingState{ProcessingStatePending, ProcessingStateCancelling},
+			until,
+			messageIDRegistryStateActive,
+		).Error; err != nil {
+			return err
+		}
+
 		res := tx.
 			Where("state NOT IN ?", []ProcessingState{ProcessingStatePending, ProcessingStateCancelling}).
 			Where("created_at < ?", until).
@@ -339,18 +369,8 @@ func (r *Repository) Cleanup(ctx context.Context, until time.Time) (int64, error
 		}
 
 		// Active IDs follow normal message retention; purged IDs remain reserved permanently.
-		return tx.Exec(`
-			DELETE r
-			FROM message_id_registry AS r
-			WHERE r.state = ?
-				AND NOT EXISTS (
-					SELECT 1
-					FROM messages AS m
-					WHERE m.user_id = r.user_id
-						AND SHA2(CONCAT(m.user_id, CHAR(10), m.ext_id), 256) = r.message_id_sha256
-				)`,
-			messageIDRegistryStateActive,
-		).Error
+		return tx.Where("state = ? AND active_references = 0", messageIDRegistryStateActive).
+			Delete(new(messageIDRegistryModel)).Error
 	})
 
 	return deleted, err
