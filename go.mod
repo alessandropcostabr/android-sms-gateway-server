@@ -142,3 +142,5 @@ require (
 	gorm.io/driver/sqlite v1.6.0 // indirect
 	moul.io/zapgorm2 v1.3.0 // indirect
 )
+
+replace github.com/android-sms-gateway/client-go => github.com/alessandropcostabr/client-go v1.17.0-late.1

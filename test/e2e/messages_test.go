@@ -1,7 +1,10 @@
 package e2e
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +30,10 @@ type recipientState struct {
 
 type errorResponse struct {
 	Message string `json:"message"`
+}
+
+type tokenResponse struct {
+	AccessToken string `json:"access_token"`
 }
 
 func TestMessages_GetMessages(t *testing.T) {
@@ -545,4 +552,295 @@ func TestMessages_CreatedAt(t *testing.T) {
 	if stored.CreatedAt != enqueued.CreatedAt {
 		t.Errorf("createdAt stored as %q does not match enqueued %q", stored.CreatedAt, enqueued.CreatedAt)
 	}
+}
+
+func TestMessages_Purge(t *testing.T) {
+	credentials := privateMessageDeviceRegister(t)
+	authorizedClient := privateUserClient.Clone().SetTimeout(2*time.Second).
+		SetBasicAuth(credentials.Login, credentials.Password)
+	id := newMessageUUID(t)
+	request := map[string]any{
+		"id":           id,
+		"message":      "privacy purge test",
+		"deviceId":     credentials.ID,
+		"phoneNumbers": []string{"+79990001234"},
+	}
+
+	postRes, err := authorizedClient.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(request).
+		Post("messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postRes.StatusCode() != 202 {
+		t.Fatal(postRes.StatusCode(), postRes.String())
+	}
+
+	purgeRes, err := authorizedClient.R().Delete("messages/" + id + "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purgeRes.StatusCode() != 204 {
+		t.Fatal(purgeRes.StatusCode(), purgeRes.String())
+	}
+
+	getRes, err := authorizedClient.R().Get("messages/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if getRes.StatusCode() != 404 {
+		t.Fatal(getRes.StatusCode(), getRes.String())
+	}
+
+	replayRes, err := authorizedClient.R().Delete("messages/" + id + "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayRes.StatusCode() != 204 {
+		t.Fatal(replayRes.StatusCode(), replayRes.String())
+	}
+
+	recreateRes, err := authorizedClient.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(request).
+		Post("messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recreateRes.StatusCode() != 410 {
+		t.Fatal(recreateRes.StatusCode(), recreateRes.String())
+	}
+
+	var response errorResponse
+	if err := json.Unmarshal(recreateRes.Body(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Message != "message id purged" {
+		t.Errorf("expected purged ID error, got %q", response.Message)
+	}
+}
+
+func TestMessages_PurgeRejectsNonCanonicalID(t *testing.T) {
+	credentials := privateMessageDeviceRegister(t)
+	authorizedClient := privateUserClient.Clone().SetTimeout(2*time.Second).
+		SetBasicAuth(credentials.Login, credentials.Password)
+
+	res, err := authorizedClient.R().Delete("messages/not-a-uuid/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode() != 400 {
+		t.Fatal(res.StatusCode(), res.String())
+	}
+}
+
+func TestMessages_PurgeRequiresDedicatedScope(t *testing.T) {
+	credentials := privateMessageDeviceRegister(t)
+
+	purgeToken := issueMessageToken(t, credentials, []string{"messages:purge"})
+	allowedRes, err := privateUserClient.Clone().SetTimeout(2 * time.Second).
+		SetAuthToken(purgeToken).
+		R().
+		Delete("messages/" + newMessageUUID(t) + "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowedRes.StatusCode() != 204 {
+		t.Fatal(allowedRes.StatusCode(), allowedRes.String())
+	}
+
+	readToken := issueMessageToken(t, credentials, []string{"messages:read"})
+	deniedRes, err := privateUserClient.Clone().SetTimeout(2 * time.Second).
+		SetAuthToken(readToken).
+		R().
+		Delete("messages/" + newMessageUUID(t) + "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deniedRes.StatusCode() != 403 {
+		t.Fatal(deniedRes.StatusCode(), deniedRes.String())
+	}
+}
+
+func TestMessages_PurgeIsScopedByUser(t *testing.T) {
+	firstCredentials := privateMessageDeviceRegister(t)
+	secondCredentials := privateMessageDeviceRegister(t)
+	firstClient := privateUserClient.Clone().SetTimeout(2*time.Second).
+		SetBasicAuth(firstCredentials.Login, firstCredentials.Password)
+	secondClient := privateUserClient.Clone().SetTimeout(2*time.Second).
+		SetBasicAuth(secondCredentials.Login, secondCredentials.Password)
+	id := newMessageUUID(t)
+
+	for _, account := range []struct {
+		client   *resty.Client
+		deviceID string
+	}{
+		{client: firstClient, deviceID: firstCredentials.ID},
+		{client: secondClient, deviceID: secondCredentials.ID},
+	} {
+		res, err := account.client.R().
+			SetHeader("Content-Type", "application/json").
+			SetBody(map[string]any{
+				"id":           id,
+				"message":      "tenant isolation test",
+				"deviceId":     account.deviceID,
+				"phoneNumbers": []string{"+79990001234"},
+			}).
+			Post("messages")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.StatusCode() != 202 {
+			t.Fatal(res.StatusCode(), res.String())
+		}
+	}
+
+	purgeRes, err := secondClient.R().Delete("messages/" + id + "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purgeRes.StatusCode() != 204 {
+		t.Fatal(purgeRes.StatusCode(), purgeRes.String())
+	}
+
+	firstGetRes, err := firstClient.R().Get("messages/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstGetRes.StatusCode() != 200 {
+		t.Fatal(firstGetRes.StatusCode(), firstGetRes.String())
+	}
+}
+
+func TestMessages_PurgeWinsConcurrentCreate(t *testing.T) {
+	credentials := privateMessageDeviceRegister(t)
+	authorizedClient := privateUserClient.Clone().SetTimeout(2*time.Second).
+		SetBasicAuth(credentials.Login, credentials.Password)
+	id := newMessageUUID(t)
+	start := make(chan struct{})
+	statuses := make(chan int, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		<-start
+		res, err := authorizedClient.R().
+			SetHeader("Content-Type", "application/json").
+			SetBody(map[string]any{
+				"id":           id,
+				"message":      "concurrent purge test",
+				"deviceId":     credentials.ID,
+				"phoneNumbers": []string{"+79990001234"},
+			}).
+			Post("messages")
+		if err != nil {
+			statuses <- 0
+			return
+		}
+		statuses <- res.StatusCode()
+	}()
+
+	go func() {
+		defer wg.Done()
+		<-start
+		res, err := authorizedClient.R().Delete("messages/" + id + "/data")
+		if err != nil {
+			statuses <- 0
+			return
+		}
+		statuses <- res.StatusCode()
+	}()
+
+	close(start)
+	wg.Wait()
+	close(statuses)
+
+	seenPurge := false
+	seenCreateOutcome := false
+	for status := range statuses {
+		switch status {
+		case 204:
+			seenPurge = true
+		case 202, 410:
+			seenCreateOutcome = true
+		default:
+			t.Fatalf("unexpected concurrent response status %d", status)
+		}
+	}
+	if !seenPurge || !seenCreateOutcome {
+		t.Fatalf("expected purge and create outcomes, purge=%t create=%t", seenPurge, seenCreateOutcome)
+	}
+
+	getRes, err := authorizedClient.R().Get("messages/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if getRes.StatusCode() != 404 {
+		t.Fatal(getRes.StatusCode(), getRes.String())
+	}
+}
+
+func privateMessageDeviceRegister(t *testing.T) mobileRegisterResponse {
+	t.Helper()
+
+	res, err := privateMobileClient.Clone().SetTimeout(2*time.Second).R().
+		SetAuthToken("123456789").
+		SetHeader("Content-Type", "application/json").
+		SetBody(`{"name":"Private Purge Test Device","pushToken":"token"}`).
+		Post("device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode() != 201 {
+		t.Fatal(res.StatusCode(), res.String())
+	}
+
+	var response mobileRegisterResponse
+	if err := json.Unmarshal(res.Body(), &response); err != nil {
+		t.Fatal(err)
+	}
+
+	return response
+}
+
+func issueMessageToken(t *testing.T, credentials mobileRegisterResponse, scopes []string) string {
+	t.Helper()
+
+	res, err := privateUserClient.Clone().SetTimeout(2*time.Second).
+		SetBasicAuth(credentials.Login, credentials.Password).
+		R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(map[string]any{"ttl": 60, "scopes": scopes}).
+		Post("auth/token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode() != 201 {
+		t.Fatal(res.StatusCode(), res.String())
+	}
+
+	var response tokenResponse
+	if err := json.Unmarshal(res.Body(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.AccessToken == "" {
+		t.Fatal("token response has no access token")
+	}
+
+	return response.AccessToken
+}
+
+func newMessageUUID(t *testing.T) string {
+	t.Helper()
+
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		t.Fatal(err)
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%x-%x-%x-%x-%x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16])
 }

@@ -38,10 +38,8 @@ github.com/KyleBanks/depth v1.2.1 h1:5h8fQADFrWtarTdtDudMmGsC7GPbOAu6RVB3ffsVFHc
 github.com/KyleBanks/depth v1.2.1/go.mod h1:jzSb9d0L43HxTQfT+oSA1EEp2q+ne2uh6XgeJcm8brE=
 github.com/MicahParks/keyfunc v1.9.0 h1:lhKd5xrFHLNOWrDc4Tyb/Q1AJ4LCzQ48GVJyVIID3+o=
 github.com/MicahParks/keyfunc v1.9.0/go.mod h1:IdnCilugA0O/99dW+/MkvlyrsX8+L8+x95xuVNtM5jw=
-github.com/android-sms-gateway/client-go v1.16.4-0.20261021010514-578da8f4aeae h1:FXxQks9s/uNydnbDY4OcS+pVs2EwHPYnNemIqLxYi/0=
-github.com/android-sms-gateway/client-go v1.16.4-0.20261021010514-578da8f4aeae/go.mod h1:DQsReciU1xcaVW3T5Z2bqslNdsAwCFCtghawmA6g6L4=
-github.com/android-sms-gateway/client-go v1.17.0 h1:F00xgy6fWukJ+ilb87pjx7fKc9MQ6fz01tBlMIHwGfk=
-github.com/android-sms-gateway/client-go v1.17.0/go.mod h1:DQsReciU1xcaVW3T5Z2bqslNdsAwCFCtghawmA6g6L4=
+github.com/alessandropcostabr/client-go v1.17.0-late.1 h1:jL6hgxnffUXeP7eQC1BGlqiQbR6hH78GVN/XdrMIolM=
+github.com/alessandropcostabr/client-go v1.17.0-late.1/go.mod h1:DQsReciU1xcaVW3T5Z2bqslNdsAwCFCtghawmA6g6L4=
 github.com/ansrivas/fiberprometheus/v2 v2.18.0 h1:cxjAl2urLYbUu0/2KusrA8Vxkk/8v2WRzmlrhvsR3GE=
 github.com/ansrivas/fiberprometheus/v2 v2.18.0/go.mod h1:3YCvolUcblrr6IPZqPmHvWw5NJHHNrKS58XIrYXMinY=
 github.com/benbjohnson/clock v1.1.0/go.mod h1:J11/hYXuz8f4ySSvYwY0FKfm+ezbsZBKZxNJlLklBHA=
@@ -77,8 +75,6 @@ github.com/felixge/httpsnoop v1.1.0 h1:3YtUj32ZZkqZtt3sZZsClsymw/QDuVfpNhoA31zeO
 github.com/felixge/httpsnoop v1.1.0/go.mod h1:Zqxgdd+1Rkcz8euOqdr7lqgCRJztwr5hp9vDSi5UZCE=
 github.com/gabriel-vasile/mimetype v1.4.15 h1:05iP/CYtZ/w455R/KZM6rZ5ieAdh99UPtd+d3YzLmaI=
 github.com/gabriel-vasile/mimetype v1.4.15/go.mod h1:azpTcoLcDZRNgFou5j+APrqQx9HqVPWa6ijYQIIVswQ=
-github.com/go-core-fx/cachefx v0.1.1-0.20261024103257-63f6f7f39719 h1:2bpiJsnjuWOWuJVfG4YLHeST04JZFe+/9u8lnH5GpTo=
-github.com/go-core-fx/cachefx v0.1.1-0.20261024103257-63f6f7f39719/go.mod h1:8CCFbfbojyoUEvnaExvpXha+wnA2U0wPHmHJots00BA=
 github.com/go-core-fx/cachefx v0.2.0 h1:uxzAruGSZcKakF8Qiv8iPYF1j2Il8/cYBXMHuuuLSi4=
 github.com/go-core-fx/cachefx v0.2.0/go.mod h1:8CCFbfbojyoUEvnaExvpXha+wnA2U0wPHmHJots00BA=
 github.com/go-core-fx/fiberfx v0.6.0 h1:/etL9QXCr0gfQOXLZSjWnAuj3uwmhm3J5fiKGg27rB4=
