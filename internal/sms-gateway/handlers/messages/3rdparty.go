@@ -17,6 +17,7 @@ import (
 	"github.com/capcom6/go-helpers/slices"
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -73,6 +74,7 @@ func NewThirdPartyController(params thirdPartyControllerParams) *ThirdPartyContr
 //	@Failure		401					{object}	smsgateway.ErrorResponse		"Unauthorized"
 //	@Failure		403					{object}	smsgateway.ErrorResponse		"Forbidden"
 //	@Failure		409					{object}	smsgateway.ErrorResponse		"Message with the same ID already exists"
+//	@Failure		410					{object}	smsgateway.ErrorResponse		"Message ID was permanently purged"
 //	@Failure		500					{object}	smsgateway.ErrorResponse		"Internal server error"
 //	@Failure		503					{object}	smsgateway.ErrorResponse		"Queue limits exceeded; ensure device is online"
 //	@Header			202					{string}	Location						"Get message state URL"
@@ -287,6 +289,34 @@ func (h *ThirdPartyController) delete(userID string, c *fiber.Ctx) error {
 	return c.JSON(converters.MessageStateToDTO(*state))
 }
 
+//	@Summary		Purge message data
+//	@Description	Permanently removes a message and reserves its canonical UUID against later reuse. Requires the messages:purge scope.
+//	@Security		ApiAuth
+//	@Security		JWTAuth
+//	@Tags			User, Messages
+//	@Param			id	path	string	true	"Canonical lowercase message UUID"
+//	@Success		204	"Message data purged"
+//	@Failure		400	{object}	smsgateway.ErrorResponse	"Invalid message UUID"
+//	@Failure		401	{object}	smsgateway.ErrorResponse	"Unauthorized"
+//	@Failure		403	{object}	smsgateway.ErrorResponse	"Forbidden"
+//	@Failure		500	{object}	smsgateway.ErrorResponse	"Internal server error"
+//	@Router			/3rdparty/v1/messages/{id}/data [delete]
+//
+// Purge message data and reserve its ID against later reuse.
+func (h *ThirdPartyController) purge(userID string, c *fiber.Ctx) error {
+	id := c.Params("id")
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed.String() != id {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid message id")
+	}
+
+	if err := h.messagesSvc.PurgeMessage(userID, id); err != nil {
+		return fmt.Errorf("failed to purge message: %w", err)
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
 // Export inbox.
 //
 // Deprecated: use /3rdparty/v1/inbox/refresh instead.
@@ -333,6 +363,8 @@ func (h *ThirdPartyController) errorHandler(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, err.Error())
 	case errors.Is(err, messages.ErrMessageAlreadyExists):
 		return fiber.NewError(fiber.StatusConflict, messages.ErrMessageAlreadyExists.Error())
+	case errors.Is(err, messages.ErrMessagePurged):
+		return fiber.NewError(fiber.StatusGone, messages.ErrMessagePurged.Error())
 	case errors.Is(err, messages.ErrQueueLimitExceeded):
 		return fiber.NewError(fiber.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, messages.ErrMessageNotPending):
@@ -354,6 +386,7 @@ func (h *ThirdPartyController) Register(router fiber.Router) {
 	router.Get("", permissions.RequireScope(ScopeList), userauth.WithUserID(h.list))
 	router.Post("", permissions.RequireScope(ScopeSend), userauth.WithUserID(h.post))
 	router.Get(":id", permissions.RequireScope(ScopeRead), userauth.WithUserID(h.get)).Name(route3rdPartyGetMessage)
+	router.Delete(":id/data", permissions.RequireScope(ScopePurge), userauth.WithUserID(h.purge))
 	router.Delete(":id", permissions.RequireScope(ScopeCancel), userauth.WithUserID(h.delete))
 
 	router.Post("inbox/export", permissions.RequireScope(ScopeExport), userauth.WithUserID(h.postInboxExport))

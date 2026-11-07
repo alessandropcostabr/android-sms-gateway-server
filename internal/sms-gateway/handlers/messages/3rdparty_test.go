@@ -49,6 +49,12 @@ func TestThirdPartyControllerErrorHandler(t *testing.T) {
 			wantBody:   `{"message":"message with the same ID already exists"}`,
 		},
 		{
+			name:       "wrapped purged ID emits gone",
+			handlerErr: fmt.Errorf(enqueueWrap, messages.ErrMessagePurged),
+			wantStatus: fiber.StatusGone,
+			wantBody:   `{"message":"message id purged"}`,
+		},
+		{
 			name:       "wrapped multiple messages found keeps err.Error() text (unchanged)",
 			handlerErr: fmt.Errorf(enqueueWrap, messages.ErrMultipleMessagesFound),
 			wantStatus: fiber.StatusBadRequest,

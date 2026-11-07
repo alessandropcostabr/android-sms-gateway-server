@@ -14,6 +14,7 @@ import (
 
 type ProcessingState string
 type MessageType string
+type messageIDRegistryState string
 
 const (
 	ProcessingStatePending    ProcessingState = "Pending"
@@ -27,7 +28,22 @@ const (
 	MessageTypeText MessageType = "Text"
 	MessageTypeData MessageType = "Data"
 	MessageTypeMms  MessageType = "Mms"
+
+	messageIDRegistryStateActive messageIDRegistryState = "active"
+	messageIDRegistryStatePurged messageIDRegistryState = "purged"
 )
+
+type messageIDRegistryModel struct {
+	UserID          string                 `gorm:"primaryKey;type:varchar(32)"`
+	MessageIDSHA256 string                 `gorm:"primaryKey;type:char(64)"`
+	State           messageIDRegistryState `gorm:"not null;type:enum('active','purged')"`
+	CreatedAt       time.Time              `gorm:"->;not null;autocreatetime:false;default:CURRENT_TIMESTAMP(3)"`
+	PurgedAt        *time.Time             `gorm:"type:datetime(3)"`
+}
+
+func (*messageIDRegistryModel) TableName() string {
+	return "message_id_registry"
+}
 
 type messageModel struct {
 	models.SoftDeletableModel
@@ -283,7 +299,12 @@ func (m *messageStateModel) TableName() string {
 }
 
 func Migrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(new(messageModel), new(messageRecipientModel), new(messageStateModel)); err != nil {
+	if err := db.AutoMigrate(
+		new(messageModel),
+		new(messageRecipientModel),
+		new(messageStateModel),
+		new(messageIDRegistryModel),
+	); err != nil {
 		return fmt.Errorf("messages migration failed: %w", err)
 	}
 	return nil

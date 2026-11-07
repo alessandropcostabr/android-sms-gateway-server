@@ -2,6 +2,8 @@ package messages
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -131,15 +133,95 @@ func (r *Repository) get(filter SelectFilter, options SelectOptions) (messageMod
 }
 
 func (r *Repository) Insert(message *messageModel) error {
-	if err := r.db.Omit("Device").Create(message).Error; err != nil {
-		if errors.Is(err, gorm.ErrDuplicatedKey) || mysql.IsDuplicateKeyViolation(err) {
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		registry := messageIDRegistryModel{
+			UserID:          message.UserID,
+			MessageIDSHA256: messageIDRegistryHash(message.UserID, message.ExtID),
+			State:           messageIDRegistryStateActive,
+		}
+		if err := tx.Create(&registry).Error; err != nil {
+			if !errors.Is(err, gorm.ErrDuplicatedKey) && !mysql.IsDuplicateKeyViolation(err) {
+				return err
+			}
+
+			var existing messageIDRegistryModel
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing,
+				"user_id = ? AND message_id_sha256 = ?",
+				registry.UserID,
+				registry.MessageIDSHA256,
+			).Error; err != nil {
+				return err
+			}
+			if existing.State == messageIDRegistryStatePurged {
+				return ErrMessagePurged
+			}
 			return ErrMessageAlreadyExists
 		}
 
+		return tx.Omit("Device").Create(message).Error
+	})
+	if err != nil {
+		if errors.Is(err, ErrMessagePurged) {
+			return ErrMessagePurged
+		}
+		if errors.Is(err, ErrMessageAlreadyExists) || errors.Is(err, gorm.ErrDuplicatedKey) || mysql.IsDuplicateKeyViolation(err) {
+			return ErrMessageAlreadyExists
+		}
 		return fmt.Errorf("failed to insert message: %w", err)
 	}
 
 	return r.loadCreatedAt(message)
+}
+
+func messageIDRegistryHash(userID string, id string) string {
+	digest := sha256.Sum256([]byte(userID + "\n" + id))
+	return hex.EncodeToString(digest[:])
+}
+
+func (r *Repository) PurgeMessage(userID string, id string) error {
+	now := time.Now().UTC()
+	registry := messageIDRegistryModel{
+		UserID:          userID,
+		MessageIDSHA256: messageIDRegistryHash(userID, id),
+		State:           messageIDRegistryStatePurged,
+		PurgedAt:        &now,
+	}
+
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "user_id"}, {Name: "message_id_sha256"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"state":     messageIDRegistryStatePurged,
+				"purged_at": now,
+			}),
+		}).Create(&registry).Error; err != nil {
+			return err
+		}
+
+		return tx.Where("user_id = ? AND ext_id = ?", userID, id).
+			Delete(new(messageModel)).Error
+	})
+	if err != nil {
+		return fmt.Errorf("failed to purge message: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Repository) IsMessagePurged(userID string, id string) (bool, error) {
+	var count int64
+	err := r.db.Model(new(messageIDRegistryModel)).
+		Where("user_id = ? AND message_id_sha256 = ? AND state = ?",
+			userID,
+			messageIDRegistryHash(userID, id),
+			messageIDRegistryStatePurged,
+		).
+		Count(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("failed to check message purge registry: %w", err)
+	}
+
+	return count > 0, nil
 }
 
 // loadCreatedAt reads the creation time assigned by the database back into the message.
@@ -167,6 +249,19 @@ func (r *Repository) loadCreatedAt(message *messageModel) error {
 
 func (r *Repository) UpdateState(message *messageModel) error {
 	err := r.db.Transaction(func(tx *gorm.DB) error {
+		var registry messageIDRegistryModel
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(
+			&registry,
+			"user_id = ? AND message_id_sha256 = ?",
+			message.UserID,
+			messageIDRegistryHash(message.UserID, message.ExtID),
+		).Error; err != nil {
+			return err
+		}
+		if registry.State == messageIDRegistryStatePurged {
+			return ErrMessageNotFound
+		}
+
 		if err := tx.Model(message).Select("State").Updates(message).Error; err != nil {
 			return err
 		}
@@ -232,12 +327,33 @@ func (r *Repository) CancelMessage(userID string, id string) error {
 }
 
 func (r *Repository) Cleanup(ctx context.Context, until time.Time) (int64, error) {
-	res := r.db.
-		WithContext(ctx).
-		Where("state NOT IN ?", []ProcessingState{ProcessingStatePending, ProcessingStateCancelling}).
-		Where("created_at < ?", until).
-		Delete(new(messageModel))
-	return res.RowsAffected, res.Error
+	var deleted int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.
+			Where("state NOT IN ?", []ProcessingState{ProcessingStatePending, ProcessingStateCancelling}).
+			Where("created_at < ?", until).
+			Delete(new(messageModel))
+		deleted = res.RowsAffected
+		if res.Error != nil {
+			return res.Error
+		}
+
+		// Active IDs follow normal message retention; purged IDs remain reserved permanently.
+		return tx.Exec(`
+			DELETE r
+			FROM message_id_registry AS r
+			WHERE r.state = ?
+				AND NOT EXISTS (
+					SELECT 1
+					FROM messages AS m
+					WHERE m.user_id = r.user_id
+						AND SHA2(CONCAT(m.user_id, CHAR(10), m.ext_id), 256) = r.message_id_sha256
+				)`,
+			messageIDRegistryStateActive,
+		).Error
+	})
+
+	return deleted, err
 }
 
 func (r *Repository) CountPending(ctx context.Context, deviceID string) (int64, error) {

@@ -905,6 +905,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }
                     },
+                    "410": {
+                        "description": "Message ID was permanently purged",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -1032,6 +1038,62 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Message not found",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/3rdparty/v1/messages/{id}/data": {
+            "delete": {
+                "security": [
+                    {
+                        "ApiAuth": []
+                    },
+                    {
+                        "JWTAuth": []
+                    }
+                ],
+                "description": "Permanently removes a message and reserves its canonical UUID against later reuse. Requires the messages:purge scope.",
+                "tags": [
+                    "User",
+                    "Messages"
+                ],
+                "summary": "Purge message data",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Canonical lowercase message UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Message data purged"
+                    },
+                    "400": {
+                        "description": "Invalid message UUID",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
                         "schema": {
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }

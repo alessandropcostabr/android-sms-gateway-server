@@ -166,6 +166,14 @@ func (s *Service) SelectStates(
 }
 
 func (s *Service) GetState(userID string, id string) (*MessageState, error) {
+	purged, err := s.messages.IsMessagePurged(userID, id)
+	if err != nil {
+		return nil, err
+	}
+	if purged {
+		return nil, ErrMessageNotFound
+	}
+
 	state, err := s.cache.Get(context.Background(), userID, id)
 	if err == nil {
 		s.metrics.IncCache(true)
@@ -236,6 +244,18 @@ func (s *Service) CancelMessage(userID string, id string) (*MessageState, error)
 	}(userID, message.DeviceID, id)
 
 	return s.GetState(userID, id)
+}
+
+func (s *Service) PurgeMessage(userID string, id string) error {
+	if err := s.messages.PurgeMessage(userID, id); err != nil {
+		return err
+	}
+
+	if err := s.cache.Delete(context.Background(), userID, id); err != nil {
+		return fmt.Errorf("failed to invalidate purged message cache: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Service) Enqueue(
